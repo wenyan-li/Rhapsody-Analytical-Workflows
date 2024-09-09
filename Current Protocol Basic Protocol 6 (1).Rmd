@@ -1,0 +1,239 @@
+---
+title: "Basic Protocol 6"
+author: "Wenyan Li"
+date: "2023-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Support script for basic protocol 6
+# 6.1 cerebroApp
+
+```{r}
+
+# load required packages
+# load libraries
+library(cerebroApp)
+library(InterCellar)
+library(Seurat)
+library(tidyverse)
+
+# set a seed to re-produce pseudorandom numbers
+set.seed(99)
+
+# Set up working directory
+get_path <- dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(get_path)
+
+# load subsetted Seurat objects for Basic Protocol 4
+load("Protocol 4 output/subsetted demo Seurat objects (advanced analysis).RData")
+
+# save CerebroApp files to
+saveCerebroFolder <- "Protocol 6 output"
+
+```
+
+
+```{r}
+# Prepare file for CerebroApp export
+
+# Build function
+func_export_cerebro <- function(input_seurat,
+                                DGE,
+                                species,
+                                enableEnrichedPathways,
+                                saveTo = saveCerebroFolder,
+                                output_name)
+     {
+  
+      DefaultAssay(input_seurat) <- 'RNA'
+  
+      #  1) the maker genes can be tucked in here. Note: cerebroApp itself also has a
+      #     function to calculate the differential gene expression, but it uses the 
+      #     same method as the FindAllMarkers() in the Seurat package, which takes a
+      #     relatively longer time.
+      colnames(DGE$DGEs_cluster)[which(colnames(DGE$DGEs_cluster) == "cluster")] <- "cell_cluster"
+      colnames(DGE$DGEs_cell)[which(colnames(DGE$DGEs_cell) == "cluster")] <- "cell_type"
+  
+      input_seurat@misc[["marker_genes"]][["cerebro_seurat"]][["cell_cluster"]] <- DGE$DGEs_cluster
+      input_seurat@misc[["marker_genes"]][["cerebro_seurat"]][["cell_type"]] <- DGE$DGEs_cell
+  
+      # 2) build cluster tree
+      # based on cell type annotation
+      Seurat::Idents(input_seurat) <- "cell_type"
+
+      input_seurat <- BuildClusterTree(
+                           input_seurat,
+                           dims = 1:10, # change value for other samples, e.g. 1:15
+                           reorder = FALSE,
+                           reorder.numeric = FALSE)
+
+      input_seurat@misc$trees[["cell_type"]] <- input_seurat@tools$BuildClusterTree
+      
+      # based on Seurat clusters
+      Seurat::Idents(input_seurat) <- "seurat_clusters"
+
+      input_seurat <- BuildClusterTree(
+                           input_seurat,
+                           dims = 1:10, # change value for other samples, e.g. 1:15
+                           reorder = FALSE,
+                           reorder.numeric = FALSE)
+
+      input_seurat@misc$trees[["seurat_clusters"]] <- input_seurat@tools$BuildClusterTree
+
+      # 3) cell cycle analysis
+      input_seurat <- CellCycleScoring(
+                           input_seurat,
+                           g2m.features = cc.genes.updated.2019$g2m.genes,
+                           s.features = cc.genes.updated.2019$s.genes)
+
+      input_seurat@misc$gene_lists$G2M_phase_genes <- cc.genes.updated.2019$g2m.genes
+
+      input_seurat@misc$gene_lists$S_phase_genes <- cc.genes.updated.2019$s.genes
+
+      # 4) calculate most expressed genes for each cell group
+      input_seurat <- cerebroApp::getMostExpressedGenes(
+                                  input_seurat,
+                                  assay = 'RNA',
+                                  groups = c('cell_type',
+                                             'seurat_clusters')) # can add more
+      
+      # more examples can be found at
+      #  https://romanhaa.github.io/cerebroApp/articles/cerebroApp_workflow_Seurat.html
+
+      # 5) calculate MT and Rib genes with cerebroApp
+      input_seurat <- addPercentMtRibo(
+                               input_seurat,
+                               organism = species,
+                               gene_nomenclature = 'name'
+                  )
+
+      
+      # 6) calculate pathway enrichment with cerebroApp
+      if (enableEnrichedPathways) {
+        
+          input_seurat <- getEnrichedPathways(
+                            input_seurat,
+                            marker_genes_input = 'cerebro_seurat',
+                            adj_p_cutoff = 0.01,
+                            max_terms = 100)
+          }
+      
+      
+      # 7) export the Seurat object as .crb format
+      # Save the curated data to local drive
+      ifelse(!dir.exists(file.path(saveTo)), 
+             dir.create(file.path(saveTo)), 
+             FALSE)
+
+      cerebroApp::exportFromSeurat(
+                  object =  input_seurat,
+                  assay = "RNA",
+                  slot = 'data',
+                  file = paste(saveTo, 
+                               paste0(output_name,
+                                      "_cerebro_rna.crb"), 
+                               sep = "/"),
+                  experiment_name = "demo",
+                  organism = species, 
+                  groups = c("cell_type",
+                             "seurat_clusters"),
+                  nUMI = "nCount_RNA", 
+                  cell_cycle = "Phase",
+                  nGene = "nFeature_RNA",
+                  add_all_meta_data = TRUE,
+                  verbose = FALSE)
+
+      if ("AB" %in% Seurat::Assays(input_seurat))
+             {
+        
+        input_seurat$nCount_AB <- colSums(input_seurat@assays$AB@counts)
+        input_seurat$nFeature_AB <- colSums(input_seurat@assays$AB@counts > 0)
+        
+              cerebroApp::exportFromSeurat(
+                          object =  input_seurat,
+                          assay = "AB", 
+                          slot = 'data',
+                          file = paste(saveTo, 
+                                       paste0(output_name,
+                                      "_cerebro_protein.crb"), 
+                                       sep = "/"),
+                          experiment_name = "demo",
+                          organism = species,
+                          groups = c("cell_type", 
+                                     "seurat_clusters"),
+                          nUMI = "nCount_AB", 
+                          cell_cycle = "Phase",
+                          nGene = "nFeature_AB", 
+                          add_all_meta_data = TRUE,
+                          verbose = FALSE)
+             } # end of if statement
+
+      # return Seurat object
+      return(input_seurat)
+
+} # end of function
+
+# Use function to export file
+
+# parameter "output_name" for function func_export_cerebro can be any string, 
+# e.g. output_name <- "PBMCs_1".
+# Here, Seurat project names are used.
+subset_demo_seurat_1 <- func_export_cerebro(input_seurat = subset_demo_seurat_1, 
+                        DGE = subset_demo1_DGEs, 
+                        saveTo = saveCerebroFolder,
+                        species = "hg", # or "mm" for mouse tissue
+                        enableEnrichedPathways = TRUE, # or FALSE to disable
+                        output_name = "demo_1_cerebroapp")
+
+subset_demo_seurat_2 <- func_export_cerebro(input_seurat = subset_demo_seurat_2, 
+                        DGE = subset_demo2_DGEs, 
+                        saveTo = saveCerebroFolder,
+                        species = "hg", # or "mm" for mouse tissue
+                        enableEnrichedPathways = TRUE, # or FALSE to disable
+                        output_name = "demo_2_cerebroapp")
+
+
+```
+
+
+```{r}
+
+# Save Seurat objects with cerebroApp content to local drive
+
+save(subset_demo_seurat_1,
+     subset_demo_seurat_2,
+     file = paste(saveCerebroFolder,
+                  "Seurat objects (cerebroApp).RData", 
+                  sep = "/"))
+
+
+```
+
+6.1.2 Data visualization with cerebroApp
+
+```{r}
+
+# launch cerebroApp
+ cerebroApp::launchCerebroV1.3()
+
+```
+
+# 6.2 InterCellar
+
+```{r}
+# activate interactive user interface.
+
+ InterCellar::run_app()
+
+# more information can be found at https://github.com/martaint/InterCellar/
+
+```
+
+
+
+
+

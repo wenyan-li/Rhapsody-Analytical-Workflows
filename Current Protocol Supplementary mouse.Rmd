@@ -1,0 +1,1291 @@
+---
+title: "scRNAseq_workflow_protocol (supplementary mouse)"
+author: "Wenyan Li"
+date: '2023-11-17'
+output:
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Set up working directory
+```{r}
+# load required packages
+library(rstudioapi)
+library(Seurat)
+library(patchwork)
+library(S4Vectors)
+library(tidyverse)
+library(ggplot2)
+
+# set a seed to re-produce pseudorandom numbers
+set.seed(99)
+
+# Obtain the path of this rmarkdown file and assign it to object "get_path"
+get_path <- dirname(rstudioapi::getSourceEditorContext()$path)
+
+# Set "get_path" as Working Directory
+setwd(get_path)
+
+# Save images and data to this folder
+saveTo <- "Supplementary mouse output"
+```
+
+# Pre-processing
+
+## create a function to save images 
+```{r}
+# Create a function to save output images
+
+func_save_images <- function(image.object, # plot objects
+                             image.name, # name of the plot
+                             image.path, # path to save image
+                             h = 8, # image height in inch
+                             w = 15, # image width in inch
+                             r = 300, # image resolution
+                             isHeatmap = F # check if image is a Seurat heatmap
+){
+  
+  ifelse(!dir.exists(image.path), 
+         dir.create(image.path,
+                    recursive = T), 
+         FALSE)
+  
+  if(isHeatmap){
+    
+      for(i in seq_along(image.name)){
+        temp.path <- paste(image.path,
+                           image.name[i], 
+                           sep = "/")
+        
+        tiff(filename = paste(temp.path,
+                              "tiff",
+                              sep = "."),
+             width = w, 
+             height = h,
+             res = r, 
+             units = "in")
+        
+        image.object[[i]]
+        dev.off()
+      } # end of for 1st loop
+    
+  }else{
+    
+      for(i in seq_along(image.name)){
+        temp.path <- paste(image.path,
+                           image.name[i], 
+                           sep = "/")
+        
+        ggsave(filename = paste(temp.path,
+                                "tiff",
+                                sep = "."), 
+               plot =  image.object[[i]],
+               width = w, 
+               height = h, 
+               units = "in", 
+               dpi = r, 
+               limitsize = FALSE)
+        
+      } # end of for 2nd loop
+    
+  } # end of if isHeatmap statement
+  
+}# end of func_save_images function
+
+```
+
+
+## Load Seurat object
+```{r}
+# Choose a folder/experiment to analyse
+exp1 <- "BD-Demo-mouse-wta"
+
+# Load the Seurat objects as demo_seurat_1 and demo_seurat_2
+demo_seurat_1 <- readRDS(list.files(exp1, full.names = T, pattern = "*.rds"))
+
+```
+
+
+## Check Seurat object
+```{r}
+demo_seurat_1
+```
+
+## Data normalisation, scaling and finding clusters
+```{r}
+# Build function
+
+# The size of AbSeq panels varies, reduce the number for ab_pc_num if your panel is smaller than 10.
+func_quick_process <- function(demo_seurat,
+                               ab_pc_num = 10, # number of PCA components to use for protein
+                               rna_pc_num = 15, # number of PCA components to use for RNA
+                               ab_reduction_res = 0.8, # cluster resolution for protein
+                               rna_reduction_res = 0.8) # cluster resolution for RNA
+  
+     {
+  
+      # check if the Seurat object has protein assay
+      if("AB" %in% Seurat::Assays(demo_seurat))
+        
+          {  
+           Seurat::DefaultAssay(demo_seurat) <- 'AB'
+  
+           # Normalize and scale data
+           demo_seurat <- demo_seurat %>% 
+                          Seurat::NormalizeData(normalization.method = 'CLR', 
+                                                margin = 2)  %>% 
+                          Seurat::FindVariableFeatures() %>% 
+                          Seurat::ScaleData() 
+
+	         # perform PCA
+           demo_seurat <- Seurat::RunPCA(object = demo_seurat, 
+                                         reduction.name = 'apca')
+
+	         # perform UMAP
+           demo_seurat <- Seurat::RunUMAP(demo_seurat, 
+                                          reduction = 'apca', 
+                                          dims = 1:ab_pc_num, 
+                                          assay = 'AB', 
+                                          reduction.name = 'adt.umap',
+			                                    reduction.key = 'adtUMAP_')
+
+	         # Find clusters
+           demo_seurat <- Seurat::FindNeighbors(demo_seurat, 
+                                                reduction = "apca", 
+                                                dims = 1:ab_pc_num)
+
+           demo_seurat <- Seurat::FindClusters(demo_seurat, 
+                                               resolution = ab_reduction_res, 
+                                               graph.name = "AB_snn")
+
+           } # end of if statement
+  
+     # Change default assay to RNA
+     Seurat::DefaultAssay(demo_seurat) <- "RNA"
+
+     # Calculate percentages of mitochondrial gene expression for every cell. If it is a
+     #  targeted sequencing, then the output of this commend line is all zeros.
+     demo_seurat <- Seurat::PercentageFeatureSet(demo_seurat, 
+                                                 pattern = "^mt[-|.]", 
+                                                 col.name = "percent.mt") 
+
+     # find top most variant genes
+     demo_seurat <- demo_seurat %>% 
+                    Seurat::NormalizeData() %>% 
+		                Seurat::FindVariableFeatures(., 
+		                                             selection.method = "vst")
+
+     # scale data
+     demo_seurat <- Seurat::ScaleData(demo_seurat, 
+                                      verbose = FALSE)
+
+     # perform PCA
+     demo_seurat <- Seurat::RunPCA(demo_seurat, 
+                                   npcs = rna_pc_num, 
+                                   verbose = FALSE)
+
+     # perform UMAP
+     demo_seurat <- Seurat::RunUMAP(demo_seurat, 
+                                    reduction = "pca", 
+                                    dims = 1:rna_pc_num)
+
+     # Find clusters
+     demo_seurat <- Seurat::FindNeighbors(demo_seurat, 
+                                          reduction = "pca", 
+                                          dims = 1:rna_pc_num)
+
+     demo_seurat <- Seurat::FindClusters(demo_seurat, 
+                                         resolution = rna_reduction_res)
+
+     demo_seurat <- Seurat::BuildClusterTree(demo_seurat)
+
+     # return Seurat object as output
+     return(demo_seurat)
+
+} # end of func_quick_process function
+
+# Use the above function to process the Seurat objects
+demo_seurat_1 <- func_quick_process(demo_seurat_1)
+
+```
+
+
+# Save raw Seurat object
+```{r}
+# Create a folder called saveTo
+ifelse(!dir.exists(saveTo), 
+       dir.create(saveTo, 
+                  recursive = T), 
+       FALSE)
+
+# Save Seurat objects to local drive
+save(demo_seurat_1,
+     file = paste(saveTo, 
+                  "raw demo Seurat objects.RData", 
+                  sep = "/"))
+
+```
+
+
+## Results: Data normalization, scaling and finding clusters
+```{r}
+# QC plots – check mitochondrial gene percentages
+p1 <- Seurat::VlnPlot(demo_seurat_1, features = "percent.mt", 
+              group.by = "seurat_clusters") + 
+              Seurat::NoLegend() + 
+              ggtitle("mouse demo exp 1 - MT gene%")
+
+func_save_images(image.object = list(p1),
+                 image.name = "Mouse Demo 1 - Initial MT genes percentages",
+                 image.path = saveTo,
+                 h = 5, 
+                 w = 5, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+p2 <- Seurat::FeatureScatter(demo_seurat_1, 
+                             feature1 = "nCount_RNA", 
+                             feature2 = "nFeature_RNA", 
+                             group.by = "seurat_clusters") + 
+              scale_x_log10() +
+              scale_y_log10() +
+              ggtitle("mouse demo exp 1")
+
+func_save_images(image.object = list(p2),
+                 image.name = "Initial nCounts and nFeatures",
+                 image.path = saveTo,
+                 h = 5, 
+                 w = 5, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+p1 
+p2
+
+```
+
+
+## Remove poor quality cells
+```{r}
+# filter out cells with MT genes percentage > 50 (%) and 
+# cells with low nFeature_RNA
+subset_demo_seurat_1 <- subset(demo_seurat_1, 
+                               subset = percent.mt < 30 & 
+                                        nFeature_RNA > 200, 
+                               invert = F)
+
+p3 <- Seurat::VlnPlot(subset_demo_seurat_1, 
+                      features = "percent.mt", 
+                      group.by = "seurat_clusters") + 
+              Seurat::NoLegend() + 
+              ggtitle("mouse demo exp 1 - MT gene%")
+
+func_save_images(image.object = list(p3),
+                 image.name = "Subset - MT genes percentages (before re-clustering)",
+                 image.path = saveTo,
+                 h = 5, 
+                 w = 5, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+p4 <- Seurat::FeatureScatter(subset_demo_seurat_1, 
+                             feature1 = "nCount_RNA", 
+                             feature2 = "nFeature_RNA", 
+                             group.by = "seurat_clusters") + 
+              scale_x_log10() +
+              scale_y_log10() +
+              ggtitle("mouse demo exp 1")
+
+func_save_images(image.object = list(p4),
+                 image.name = "Subset - nCounts and nFeatures (before re-clustering)",
+                 image.path = saveTo,
+                 h = 5, 
+                 w = 5, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+p3 
+p4
+
+```
+
+
+## Re-cluster subsetted samples
+```{r}
+subset_demo_seurat_1 <- func_quick_process(subset_demo_seurat_1)
+
+```
+
+
+```{r}
+# UMAP plots
+p5 <- Seurat::DimPlot(subset_demo_seurat_1, 
+                      reduction = "umap", 
+                      group.by = "seurat_clusters") + 
+              ggtitle("mouse demo exp 1")
+
+func_save_images(image.object = list(p5),
+                 image.name = "Subset - UMAP group by clusters",
+                 image.path = saveTo,
+                 h = 5, 
+                 w = 5, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+p5
+
+```
+
+
+## Save subsetted Seurat objects
+```{r}
+# Save Seurat objects to local drive
+save(subset_demo_seurat_1,
+     file = paste(saveTo, 
+                  "subsetted demo Seurat objects.RData", 
+                  sep = "/"))
+
+```
+
+
+# Advanced analysis
+
+## load packages
+```{r}
+
+# load required packages
+library(rstudioapi)
+library(Seurat)
+library(ggplot2)
+library(tidyverse)
+library(patchwork)
+library(celldex)
+library(SingleR)
+library(harmony)
+library(DoubletFinder)
+library(SeuratWrappers)
+library(monocle3)
+library(slingshot)
+library(colorRamps)
+library(CellChat)
+
+```
+
+
+## cell type annotation
+```{r}
+
+# cell type annotation
+mm_ref <- celldex::ImmGenData()
+
+# build function
+func_get_annotation<- function(input_seurat)
+  
+     {
+      DefaultAssay(input_seurat) <- "RNA"
+      
+      expr_matrix <- GetAssayData(input_seurat, 
+                                  slot = "data", 
+                                  assay = "RNA")
+      
+      cluster_id <- input_seurat@meta.data$seurat_clusters
+  
+      # Optional: annotate cells by groups
+      prediction_by_cluster <-SingleR::SingleR(test = expr_matrix,
+                                       ref = mm_ref, # make sure reference data is correct
+                                       labels = mm_ref$label.main, # make sure reference data is correct
+                                       clusters = cluster_id)
+
+      # Annotation cells individually  
+      prediction_by_cell <- SingleR::SingleR(test = expr_matrix,
+                                     ref = mm_ref,  # make sure reference data is correct
+                                     labels = mm_ref$label.main) # make sure reference data is correct
+      
+      # Save SingleR results to the Seurat object
+      input_seurat@misc[["SingleR_results"]] <- prediction_by_cell
+
+      # Annotation results
+      cell_labels <- prediction_by_cell$labels
+
+      names(cell_labels) <- rownames(prediction_by_cell$labels)
+
+      # add annotation information to Seurat object under meta.data
+      input_seurat <- AddMetaData(input_seurat, 
+                                  metadata = cell_labels,
+                                  col.name = "cell_type")
+      
+      # make cell types with less than 10 cells as "unknown"
+      temp <- table(input_seurat$cell_type)[table(input_seurat$cell_type) < 10] %>% 
+              names()
+      
+      input_seurat$cell_type[input_seurat$cell_type %in% temp] <- "unknown"
+
+      # return Seurat object as output
+      return(input_seurat)
+      
+} # end of func_get_annotation function
+
+# use function to perform singleR cell type annotation
+subset_demo_seurat_1 <- func_get_annotation(subset_demo_seurat_1)
+
+```
+
+
+## Results: Cell type annotation with SingleR
+```{r}
+# Cell type summary
+table(subset_demo_seurat_1$cell_type)
+
+```
+
+
+```{r}
+# Cell annotation scores
+p_cell_1 <- plotScoreHeatmap(subset_demo_seurat_1@misc$SingleR_results,
+                             show_colnames = F)
+
+func_save_images(image.object = list(p_cell_1),
+                 image.name = c("Subset - heatmap of singleR annotation scores - demo 1"),
+                 image.path = saveTo,
+                 h = 5,
+                 w = 6,
+                 r = 300,
+                 isHeatmap = F
+                 )
+
+# Display cells in UMAP plot
+p_cell_2 <- Seurat::DimPlot(subset_demo_seurat_1, 
+                            group.by = "cell_type") + 
+            ggtitle(Project(subset_demo_seurat_1))
+
+func_save_images(image.object = list(p_cell_2),
+                 image.name = "Subset - UMAP group by cell type",
+                 image.path = saveTo,
+                 h = 5, 
+                 w = 6, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+p_cell_1 
+p_cell_2
+
+```
+
+
+##Find doublets with DoubletFinder
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+# Find doublets
+
+# BD provided doublet rates with different cell load numbers
+rhapsody_doublet_rate <- data.frame(
+                         "cell_num" = c(100,500,1000*(1:20)), 
+                         "rate" = c(0, 0.1, 0.2, 0.5, 0.7, 1, 
+                                    1.2, 1.4, 1.7, 1.9, 2.1, 
+                                    2.4, 2.6, 2.8, 3.1, 3.3, 
+                                    3.5, 3.8, 4, 4.2, 4.5 , 4.7))
+
+# Build a linear model to calculate theoretical doublet rate
+model_rhap <- lm(rate ~ cell_num, 
+                 rhapsody_doublet_rate)
+
+# define function
+func_get_doublets <- function(seuratObj,
+                              est_doublet_model = model_rhap,
+                              pc = 1:15) # number of PC components to be used
+     {
+  
+     DefaultAssay(seuratObj) <- "RNA"
+  
+     # Find pK values
+     sweep.res.list <- paramSweep_v3(seuratObj, 
+                                     PCs = pc, 
+                                     sct = F)
+
+     sweep.stats <- summarizeSweep(sweep.res.list, 
+                                   GT = FALSE)
+  
+     bcmvn <- find.pK(sweep.stats)
+
+     pK_bcmvn <- bcmvn$pK[which.max(bcmvn$BCmetric)] %>% 
+                 as.character() %>% 
+                 as.numeric()
+  
+     # estimate doublet rate based on cell number
+     DoubletRate = predict(est_doublet_model, 
+                   data.frame(cell_num = dim(seuratObj)[2]))/100
+  
+     nExp_poi <- round(DoubletRate*ncol(seuratObj)) 
+     
+     seuratObj <- doubletFinder_v3(seuratObj, 
+                                   PCs = pc, 
+                                   pN = 0.25, 
+                                   pK = pK_bcmvn, 
+                                   nExp = nExp_poi, 
+                                   reuse.pANN = F, 
+                                   sct = F)
+  
+     temp1 <- grepl("DF.classifications", 
+                    colnames(seuratObj@meta.data), 
+                    ignore.case = T)
+
+     colnames(seuratObj@meta.data)[temp1] <- "doublet_check"
+
+     seuratObj$doublet_check <- seuratObj$doublet_check
+  
+     # return output
+     return(seuratObj)
+
+} # end of function
+
+# use function to find doublets
+subset_demo_seurat_1 <- func_get_doublets(subset_demo_seurat_1,
+                                          pc = 1:15)
+
+```
+
+
+## Results: Find doublets with DoubletFinders
+```{r}
+# Visualize the result
+p_cell_3 <- DimPlot(subset_demo_seurat_1, 
+                    group.by = "doublet_check") + 
+            ggtitle(Project(subset_demo_seurat_1))
+
+func_save_images(image.object = list(p_cell_3),
+                 image.name = "Subset - doublets",
+                 image.path = saveTo,
+                 h = 5, 
+                 w = 6, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+p_cell_3
+
+```
+
+
+
+# Finding marker genes
+```{r}
+
+# Build function
+func_get_marker_genes <- function(input_seurat,
+                                  p_adj_cutoff = 0.05,
+                                  log2FC_cutoff = 1,
+                                  view_top_X_genes = 5)
+  
+     {
+      # Find marker genes for each cluster group against the rest
+      Seurat::Idents(input_seurat) <- "seurat_clusters"
+
+      cluster_DGE <- SeuratWrappers::RunPrestoAll(input_seurat, 
+                                                  assay = "RNA", 
+                                                  only.pos = FALSE, 
+                                                  verbose = FALSE)
+
+      # Find marker genes for each cell type against the rest
+      Seurat::Idents(input_seurat) <- "cell_type"
+
+      Cell_type_DGE <- SeuratWrappers::RunPrestoAll(input_seurat, 
+                                                    assay = "RNA", 
+                                                    only.pos = FALSE, 
+                                                    verbose = FALSE)
+
+      # example of taking the top X genes in each DGE group and removing the duplicates
+      cluster_DGE <- cluster_DGE[abs(cluster_DGE$avg_log2FC) > log2FC_cutoff & 
+                             cluster_DGE$p_val_adj < p_adj_cutoff, ]
+  
+      Cell_type_DGE <- Cell_type_DGE[abs(Cell_type_DGE$avg_log2FC) > log2FC_cutoff & 
+                                 Cell_type_DGE$p_val_adj < p_adj_cutoff, ]
+      
+      top_genes_cluster <- cluster_DGE %>% 
+                           group_by(cluster)%>% 
+                           slice_max(n = view_top_X_genes, 
+                                     order_by = avg_log2FC) %>% 
+                           dplyr::pull(gene) %>% 
+                           unique()
+
+      top_genes_type <- Cell_type_DGE %>% 
+                        group_by(cluster)%>% 
+                        slice_max(n = view_top_X_genes, 
+                                  order_by = avg_log2FC) %>% 
+                        dplyr::pull(gene) %>% 
+                        unique()
+
+      # return output as a list
+      return(list(DGEs_cluster = cluster_DGE, 
+                  DGEs_cell = Cell_type_DGE, 
+                  top_cluster_gene = top_genes_cluster, 
+                  top_cell_gene = top_genes_type))
+
+} # end of function
+
+# use function to get marker genes
+subset_demo1_DGEs <- func_get_marker_genes(subset_demo_seurat_1,
+                                           p_adj_cutoff = 0.05,
+                                           log2FC_cutoff = 1,
+                                           view_top_X_genes = 5) 
+
+```
+
+
+## Results: Finding marker genes
+```{r}
+# display example results
+subset_demo1_DGEs$top_cell_gene
+
+```
+
+
+```{r}
+# visualise top genes on dotplot
+p_cell_4 <- DotPlot(subset_demo_seurat_1, 
+                     features = subset_demo1_DGEs$top_cell_gene, 
+                     group.by = "cell_type") + 
+             coord_flip() +
+             RotatedAxis() +
+             ggtitle("mouse Subset Demo 1")
+
+func_save_images(image.object = list(p_cell_4),
+                 image.name = "Subset - top genes dot plot",
+                 image.path = saveTo,
+                 h = 12, 
+                 w = 7, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+p_cell_4
+
+```
+
+
+
+## Trajectory analysis - Monocle3
+
+```{r}
+# Monocle3 trajectory analysis
+
+# Define function
+func_monocle3 <- function(input_seurat,
+                          rna_pc_num = 50)
+     {
+      # covert Seurat to SingleCellExperiment object
+      demo_cds <- SeuratWrappers::as.cell_data_set(input_seurat) 
+      
+      rowData(demo_cds)$gene_short_name <- rownames(input_seurat)
+      
+      demo_cds <- preprocess_cds(demo_cds, 
+                                 num_dim = rna_pc_num)
+
+      demo_cds <- monocle3::reduce_dimension(demo_cds)
+      
+      demo_cds <- monocle3::cluster_cells(cds = demo_cds, 
+                                          cluster_method = "louvain")
+
+      demo_cds <- monocle3::learn_graph(demo_cds, 
+                                        use_partition = TRUE)
+
+      Seurat::Idents(input_seurat) <- "cell_type"
+
+      # This is just an example. Please define root cells that are biologically 
+      # correct for your experiment.
+      # Note: if ids is an empty object, then this function may generate error.
+      # You can use this line instead:       
+
+    	   # demo_cds <- monocle3::order_cells(demo_cds, reduction_method = "UMAP")
+
+      # and remove the following three lines, 
+      # "ids <- ..",
+      # "root_id <- .." 
+      # "demo_cds <- .."
+
+      # for more information, please visit 
+      # https://cole-trapnell-lab.github.io/monocle3/docs/trajectories/
+
+      ids <- unique(input_seurat$cell_type) %>% 
+             .[grep(paste("CMP", 
+                          "GMP", 
+                          "HSC", 
+                          "CD34", 
+                          "stem", 
+                          "iPS",
+                          sep = "|"),
+                    ., 
+                    ignore.case = T)]
+      
+      root_id <- colnames(subset(input_seurat, 
+                          idents = ids))
+
+      demo_cds <- monocle3::order_cells(demo_cds, 
+                                        reduction_method = "UMAP", 
+                                        root_cells = root_id)
+      
+      colData(demo_cds)$m3_pseudotime <- pseudotime(demo_cds)
+
+      # return Seurat object
+      return(demo_cds)
+}
+
+# use function to get results
+subset_demo_cds_1 <- func_monocle3(subset_demo_seurat_1,
+                                   rna_pc_num = 50)
+
+subset_demo_seurat_1 <- Seurat::AddMetaData(
+                                object = subset_demo_seurat_1,
+                                metadata = pseudotime(subset_demo_cds_1),
+                                col.name = "m3_pseudotime"
+                                )
+
+```
+
+
+## Results: Monocle3 trajectory
+
+```{r}
+# Display results
+# Check monocle3 trajectory
+p_m3_pseudo_all <- plot_cells(subset_demo_cds_1,
+                    color_cells_by = "pseudotime",
+                    label_cell_groups=FALSE,
+                    label_leaves=FALSE,
+                    label_branch_points=FALSE,
+                    graph_label_size=1.5)
+
+wrap_plots(p_m3_pseudo_all)
+
+func_save_images(image.object = list(wrap_plots(p_m3_pseudo_all)),
+                 image.name = "mouse demo 1 - Subset - monocle3 trajectory",
+                 image.path = saveTo,
+                 h = 5, 
+                 w = 6, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+
+# Check pseudotime
+p_m3_celltype <- ggplot(subset_demo_seurat_1@meta.data,
+                        aes(x = m3_pseudotime,
+                        y = cell_type, colour = cell_type)) +
+                        geom_point() +
+                        geom_jitter(width = 0.1, height = 0.2) +
+                        theme_gray() +
+                        theme(legend.position = "none")
+
+p_m3_celltype
+
+func_save_images(image.object = list(p_m3_celltype),
+                 image.name = "mouse demo 1 - Subset - monocle3 pseudotime",
+                 image.path = saveTo,
+                 h = 5,
+                 w = 6,
+                 r = 300,
+                 isHeatmap = F
+                 )
+
+```
+
+
+
+## Trajectory analysis - Slingshot
+```{r}
+# Slingshot pseudotime analysis
+
+# Define function
+func_slingshot <- function(input_seurat)
+     {
+  
+      # group cells at early states as start_clus
+  
+      # This is just an example. Please define root cells that are biologically 
+      # correct for your experiment.
+      # Note: if ids is an empty object, then this function may generate error.
+      # You can use this line instead:       
+
+    	      #    demo_sce <- slingshot::slingshot(demo_sce, 
+            #                                     clusterLabels = "cell_type",
+            #                                     reducedDim = "PCA", 
+            #                                     allow.breaks = F)
+
+      # and remove the following four lines, "Seurat::Idents(input_seurat) <- ..",
+      # "ids <- ..."
+      # "input_seurat$cell_type <- .." and 
+      # "input_seurat$cell_type[input_seurat$cell_type %in% ids] <- .."
+
+      # for more information, please visit 
+      # http://www.bioconductor.org/packages/release/bioc/vignettes/slingshot/inst/doc/vignette.html
+  
+      Seurat::Idents(input_seurat) <- "cell_type"
+
+      ids <- unique(input_seurat$cell_type) %>% 
+             .[grep(paste("CMP", 
+                          "GMP", 
+                          "HSC", 
+                          "CD34", 
+                          "stem", 
+                          "iPS", 
+                          "Myelocyte",
+                          sep = "|"), 
+               ., 
+               ignore.case = T)]
+      
+      # group root cells
+      input_seurat$cell_type[input_seurat$cell_type %in% ids] <- "start_clus"
+      
+      # convert Seurat to SingleCellExperiment class
+      demo_sce <- Seurat::as.SingleCellExperiment(input_seurat)
+         
+      # Perform slingshot analysis
+      temp <- tryCatch(
+        {
+          
+         # PCA, tSNE and UMAP are all accepted for slingshot analysis. 
+         # However, PCA has more dimensions. Hence, it's recommended by Slingshot Author.
+         
+         # Subset first 6 PC components
+         reducedDim(demo_sce, 
+                    type = "PCA", 
+                    WithDimnames = TRUE) <- reducedDim(demo_sce,
+                                                       type = "PCA")[, 1:6]
+          
+         demo_sce <- slingshot::slingshot(demo_sce, 
+                                clusterLabels = "cell_type",
+                                start.clus = "start_clus",
+                                reducedDim = "PCA", 
+                                allow.breaks = F)
+        },
+        error = function(e){
+          
+         # if there is an issue with PC selection, switch reduction method to UMAP
+         demo_sce <- slingshot::slingshot(demo_sce, 
+                                clusterLabels = "cell_type",
+                                start.clus = "start_clus",
+                                reducedDim = "UMAP", 
+                                allow.breaks = F)
+          
+        }
+      )
+      
+      # return SCE object
+      return(temp)
+
+} # end of function
+
+# use function to get results
+subset_demo_slingshot_1 <- func_slingshot(subset_demo_seurat_1)
+
+pt_lineages <- slingshot::slingPseudotime(subset_demo_slingshot_1)
+
+# add Slingshot results to the input Seurat object
+lineages <- sapply(slingLineages(colData(subset_demo_slingshot_1)$slingshot), 
+                   paste, 
+                   collapse = " -> ")
+
+subset_demo_seurat_1@meta.data[lineages] <- pt_lineages
+
+```
+
+
+
+## Results: Slingshot
+```{r}
+# display results
+
+# display every lineage pseudotime
+name_lineage <- colnames(subset_demo_seurat_1@meta.data)[grepl("start_clus",
+                                                               colnames(subset_demo_seurat_1@meta.data))]
+
+p_ss_1 <- list()
+
+for (i in name_lineage) {
+  
+  p_ss_1[[i]] <- Seurat::FeaturePlot(subset_demo_seurat_1,  
+                                     features = i) & 
+                                     theme(legend.position="top") &
+                                     scale_color_viridis_c() 
+}
+
+wrap_plots(p_ss_1, 
+           ncol = 2)
+
+func_save_images(image.object = list(wrap_plots(p_ss_1, 
+                                                ncol = 2)),
+                 image.name = "Subset - slingshot pseudotime (in Seurat)",
+                 image.path = saveTo,
+                 h = 15, 
+                 w = 12, 
+                 r = 100, 
+                 isHeatmap = F
+                 )
+
+
+```
+
+
+```{r}
+# Display lineage curves
+color <-  colorRamps::blue2green2red(length(unique(subset_demo_seurat_1$cell_type)))
+
+names(color) <- unique(subset_demo_seurat_1$cell_type)
+
+tiff(filename = paste(saveTo, 
+                      "Subset - slingshot lineages.tiff", 
+                      sep = "/"), 
+     compression = "lzw", 
+     width = 6, 
+     height = 5, 
+     units = "in", 
+     res = 300)
+
+{
+par(mar = c(6,4,6,12) + 0.1, 
+    xpd = T)
+  
+plot(reducedDim(subset_demo_slingshot_1, "PCA"), 
+     pch=16, 
+     cex = 0.5, 
+     col = color[subset_demo_seurat_1$cell_type])
+
+     title("Slingshot Lineages")
+
+     legend("right",
+            legend = names(color), 
+            fill = color, 
+            inset = c(-0.7,0))
+
+     lines(SlingshotDataSet(colData(subset_demo_slingshot_1)$slingshot), 
+           lwd = 2, 
+           col = 'black', 
+           type = 'lineages')
+}
+
+dev.off()
+
+```
+
+
+```{r}
+# Check pseudotime for different cell types
+
+p_ss_celltype <- list()
+
+for (i in name_lineage) {
+  
+p_ss_celltype[[i]] <- ggplot(subset_demo_seurat_1@meta.data, 
+                        aes(x = .data[[i]], 
+                        y = cell_type, 
+                        colour = cell_type)) +
+                        geom_point() +
+                        geom_jitter(width = 0.1, 
+                                    height = 0.2) +
+                        theme_gray() +
+                        theme(legend.position = "none", 
+                              plot.title = element_text(size = 1))
+}
+
+wrap_plots(p_ss_celltype, 
+           ncol = 2)
+
+func_save_images(image.object = list(wrap_plots(p_ss_celltype, 
+                                                ncol = 1)),
+                 image.name = "Subset - slingshot pseudotime",
+                 image.path = saveTo,
+                 h = 14, 
+                 w = 5, 
+                 r = 300, 
+                 isHeatmap = F
+                 )
+
+```
+
+
+## Cell-cell communication - CellChat
+```{r}
+# check existence of required libraries
+if (!require(CellChat)) devtools::install_github("sqjin/CellChat")
+
+# load library
+library(CellChat)
+
+# CellChat cell-cell communication analysis
+
+# create function
+func_cellchat <- function(input_seurat,
+                          output_name)
+     {
+  
+      # use cell type to grouop cells
+      cc.object <- CellChat::createCellChat(object = input_seurat, 
+                                            group.by = "cell_type")
+ 
+      cc.object@DB <- CellChat::CellChatDB.mouse
+
+      cc.object <- CellChat::subsetData(cc.object)
+      
+      cc.object <- CellChat::identifyOverExpressedGenes(cc.object)
+
+      cc.object <- CellChat::identifyOverExpressedInteractions(cc.object)
+
+      # cc.object <- CellChat::projectData(cc.object, PPI.mouse)
+
+      cc.object <- CellChat::computeCommunProb(cc.object, 
+                                               population.size = T, 
+                                               raw.use = T)
+ 
+      cc.object <- CellChat::computeCommunProbPathway(cc.object)
+
+      cc.object <- CellChat::aggregateNet(cc.object)
+      
+      output <- CellChat::subsetCommunication(cc.object, 
+                                              slot.name = "net")
+      
+      # Save the curated data to local drive
+      temp_folder <- paste(saveTo, 
+                           "CellChat output", 
+                           sep = "/")
+
+      ifelse(!dir.exists(file.path(temp_folder)), 
+             dir.create(file.path(temp_folder)), FALSE)
+
+      write.csv(x = output, 
+                file = paste(temp_folder, 
+                             paste0(output_name,".csv"), 
+                             sep = "/"))
+
+} # end of function
+
+# use function to export files
+# parameter "output_name" for function func_cellchat can any string, e.g. output_name <- "PBMCs_1".
+# Here, Seurat project names are used.
+func_cellchat(input_seurat = subset_demo_seurat_1, 
+              output_name = Project(subset_demo_seurat_1))
+
+```
+
+
+
+## Save subsetted Seurat objects
+```{r}
+# Save Seurat objects to local drive
+save(subset_demo_seurat_1,
+     subset_demo1_DGEs,
+     subset_demo_cds_1,
+     subset_demo_slingshot_1,
+     file = paste(saveTo, 
+                  "subsetted demo Seurat objects (advanced analysis).RData", 
+                  sep = "/"))
+
+```
+
+
+# Visualization
+
+# cerebroApp
+```{r}
+
+# load libraries
+library(cerebroApp)
+library(InterCellar)
+library(Seurat)
+library(tidyverse)
+
+```
+
+
+```{r}
+# Prepare file for CerebroApp export
+# load cell cycle genes for mouse
+# more details on how to get these genes can be found on this Seurat issue page on Github
+# https://github.com/satijalab/seurat/issues/2493
+
+load("BD-Demo-mouse-wta/cell_cycle_genes_mouse.RData")
+
+# Build function
+func_export_cerebro <- function(input_seurat,
+                                DGE,
+                                species,
+                                enableEnrichedPathways,
+                                saveTo = saveCerebroFolder,
+                                output_name)
+     {
+  
+      #  1) the maker genes can be tucked in here. Note: cerebroApp itself also has a
+      #     function to calculate the differential gene expression, but it uses the 
+      #     same method as the FindAllMarkers() in the Seurat package, which takes a
+      #     relatively longer time.
+      colnames(DGE$DGEs_cluster)[which(colnames(DGE$DGEs_cluster) == "cluster")] <- "cell_cluster"
+      colnames(DGE$DGEs_cell)[which(colnames(DGE$DGEs_cell) == "cluster")] <- "cell_type"
+  
+      input_seurat@misc[["marker_genes"]][["cerebro_seurat"]][["cell_cluster"]] <- DGE$DGEs_cluster
+      input_seurat@misc[["marker_genes"]][["cerebro_seurat"]][["cell_type"]] <- DGE$DGEs_cell
+  
+      # 2) build cluster tree
+      # based on cell type annotation
+      Seurat::Idents(input_seurat) <- "cell_type"
+
+      input_seurat <- BuildClusterTree(
+                           input_seurat,
+                           dims = 1:10,
+                           reorder = FALSE,
+                           reorder.numeric = FALSE)
+
+      input_seurat@misc$trees[["cell_type"]] <- input_seurat@tools$BuildClusterTree
+      
+      # based on Seurat clusters
+      Seurat::Idents(input_seurat) <- "seurat_clusters"
+
+      input_seurat <- BuildClusterTree(
+                           input_seurat,
+                           dims = 1:10,
+                           reorder = FALSE,
+                           reorder.numeric = FALSE)
+
+      input_seurat@misc$trees[["seurat_clusters"]] <- input_seurat@tools$BuildClusterTree
+
+      # 3) cell cycle analysis
+      input_seurat <- CellCycleScoring(
+                           input_seurat,
+                           g2m.features = mm_g2m,
+                           s.features = mm_s)
+
+      input_seurat@misc$gene_lists$G2M_phase_genes <- mm_g2m
+
+      input_seurat@misc$gene_lists$S_phase_genes <- mm_s
+
+      # 4) calculate most expressed genes for each cell group
+      input_seurat <- cerebroApp::getMostExpressedGenes(
+                                  input_seurat,
+                                  assay = 'RNA',
+                                  groups = c('cell_type',
+                                             'seurat_clusters')) # can add more
+
+      # more examples can be found at
+      #  https://romanhaa.github.io/cerebroApp/articles/cerebroApp_workflow_Seurat.html
+
+      # 5) calculate MT and Rib genes with cerebroApp
+      input_seurat <- addPercentMtRibo(
+                               input_seurat,
+                               organism = species, 
+                               gene_nomenclature = 'name'
+                  )
+      
+      
+      # 6) calculate pathway enrichment with cerebroApp
+      if (enableEnrichedPathways) {
+        
+          input_seurat <- getEnrichedPathways(
+                            input_seurat,
+                            marker_genes_input = 'cerebro_seurat',
+                            adj_p_cutoff = 0.01,
+                            max_terms = 100)
+          }
+      
+      
+      # 7) export the Seurat object as .crb format
+      # Save the curated data to local drive
+      ifelse(!dir.exists(file.path(saveTo)), 
+             dir.create(file.path(saveTo)), 
+             FALSE)
+
+      cerebroApp::exportFromSeurat(
+                  object =  input_seurat,
+                  assay = "RNA",
+                  slot = 'data',
+                  file = paste(saveTo, 
+                               paste0(output_name,
+                                      "_cerebro_rna.crb"), 
+                               sep = "/"),
+                  experiment_name = "demo",
+                  organism = species, 
+                  groups = c("cell_type",
+                             "seurat_clusters"),
+                  nUMI = "nCount_RNA", 
+                  cell_cycle = "Phase",
+                  nGene = "nFeature_RNA",
+                  add_all_meta_data = TRUE,
+                  verbose = FALSE)
+
+      if ("AB" %in% Seurat::Assays(input_seurat))
+             {
+              cerebroApp::exportFromSeurat(
+                          object =  input_seurat,
+                          assay = "AB", 
+                          slot = 'data',
+                          file = paste(saveTo, 
+                                       paste0(output_name,
+                                      "_cerebro_protein.crb"), 
+                                       sep = "/"),
+                          experiment_name = "demo",
+                          organism = species,
+                          groups = c("cell_type", 
+                                     "seurat_clusters"),
+                          nUMI = "nCount_AB", 
+                          cell_cycle = "Phase",
+                          nGene = "nFeature_AB", 
+                          add_all_meta_data = TRUE,
+                          verbose = FALSE)
+             } # end of if statement
+
+      # return Seurat object
+      return(input_seurat)
+
+} # end of function
+
+# Use function to export file
+
+# parameter "output_name" for function func_export_cerebro can be any string, 
+# e.g. output_name <- "PBMCs_1".
+# Here, Seurat project names are used.
+subset_demo_seurat_1 <- func_export_cerebro(input_seurat = subset_demo_seurat_1, 
+                        DGE = subset_demo1_DGEs, 
+                        saveTo = saveTo,
+                        species = "mm", 
+                        enableEnrichedPathways = TRUE, # or FALSE to disable
+                        output_name = Project(subset_demo_seurat_1))
+
+```
+
+
+## Save Seurat objects with cerebroApp content to local drive
+```{r}
+save(subset_demo_seurat_1,
+     file = paste(saveTo,
+                  "Seurat objects (cerebroApp).RData", 
+                  sep = "/"))
+
+```
+
+
+## Data visualization with cerebroApp
+```{r}
+# launch cerebroApp
+
+cerebroApp::launchCerebroV1.3()
+
+```
+
+## Data visualization with InterCellar (cell-cell communication)
+
+```{r}
+# activate interactive user interface.
+InterCellar::run_app()
+
+# more information can be found at https://github.com/martaint/InterCellar/ 
+
+```
+
+
+
+
+

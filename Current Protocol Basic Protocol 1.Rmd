@@ -1,0 +1,553 @@
+---
+title: "Basic Protocol 1, Image Analysis"
+author: "Wenyan Li"
+date: "2023-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Support script for basic protocol 1
+
+Set up working directory
+```{r}
+
+# load required packages
+library(rstudioapi)
+
+# Obtain the path of this rmarkdown file and assign it to object "get_path"
+get_path <- dirname(rstudioapi::getSourceEditorContext()$path)
+
+# Set "get_path" as Working Directory
+setwd(get_path)
+
+# Assign 'Demo-Cell Load images' folder path to "cur_path_image"
+cur_path_image <- paste(dirname(rstudioapi::getSourceEditorContext()$path), 
+                        "Demo-Cell Load images", 
+                        sep = "/")
+
+```
+
+Rhapsody image processing
+```{r}
+
+# load required packages
+library(magick)
+library(EBImage)
+library(tidyverse)
+library(ggplot2)
+
+
+# User define parameters
+
+# These numbers mean [0 to 8um], [8um - 11um] and [11um to Infinity]. 
+# The cells will be divided into 3 groups based on sizes.
+cell_size_cutpoint <- c(0, 8, 11, Inf) 
+
+# set image crop size to 30px by 30px
+crop_size <- c(30, 30) 
+
+# set image zoom in to 3x (for GIF output only)
+image_zoom_times <- 3
+
+
+# ==== User define parameters end ====
+
+
+
+# format parameters
+crop_size_3_times_zoom <- crop_size*image_zoom_times
+crop_shift <- floor(crop_size/2)
+crop_size <- paste(crop_size,crop_size,sep = "x")
+
+crop_size_3_times_zoom <- paste(crop_size_3_times_zoom,
+                                crop_size_3_times_zoom,
+			     sep = "x")
+
+cell_group_labels <- sapply(cell_size_cutpoint, 
+          FUN = function(y) 
+	         ifelse(y != cell_size_cutpoint[length(cell_size_cutpoint)],
+	                paste0(y, "-", cell_size_cutpoint[grep(y,cell_size_cutpoint)+1],
+	                " um"), y))[-length(cell_size_cutpoint)]
+
+folder_name <- strsplit(cur_path_image,split = "/") %>% 
+               unlist() %>% 
+               .[length(.)]
+
+
+# Create output folder. 
+ifelse(!dir.exists(file.path(cur_path_image, 
+                             "Image Output")), 
+       dir.create(file.path(cur_path_image, 
+                            "Image Output")), 
+       FALSE)
+
+
+# Image folder
+subfolder_name <- "Cell Load"
+
+
+# Gather image information
+input_info <- list()
+input_info[["image.files.path"]] <- paste(cur_path_image, 
+                                          subfolder_name , 
+                                          sep = "/")
+
+input_info[["csv.files.path"]] <- paste(cur_path_image, 
+                                        subfolder_name, 
+			             "IA_Result", 
+			             sep = "/")
+
+input_info[["BF.image.files"]] <- list.files(path = input_info[["image.files.path"]],
+			                  pattern = "*.BF.png")
+
+input_info[["FG.image.files"]] <- list.files(path = input_info[["image.files.path"]],
+			                  pattern = "*.FG.png")
+
+input_info[["csv.files"]] <- list.files(path = input_info[["csv.files.path"]], 
+			             pattern = "*.BF.csv") # One set of files
+
+input_info[["file.length"]] <- length(input_info[["csv.files"]])
+
+
+# ==== format parameters end ====
+
+
+
+# ==== Build functions ====
+
+
+## 1) function to crop images
+
+# function to crop images
+
+func_image_crop <- function(file_length,
+                            image_folder_name,
+                            crop_region,
+                            crop_shift_offset,
+                            csv_files_path,
+                            image_files_path,
+                            image_files_list, 
+                            csv_files_list){
+  
+  # create an empty vector to collect output images from the below looping
+  image.vector = c()
+
+  # create an empty object to collect cell sizes
+  cell.sizes.vector = c()
+
+  # create an empty data frame to collect detailed cell information
+  cell.sizes.centres.dataframe = c()
+  
+  # A loop to scan every image and csv file
+  for (i in 1:file_length){
+
+      # Load csv summary file. Skip first 49 lines to make sure the matrix has >4 columns
+      x.csv <- read.csv(paste(csv_files_path , 
+                              csv_files_list[i], 
+                              sep = "/"),
+		      skip = 49,
+		      na.strings = "NA",
+		      header = F)
+    
+      # Locate cell positions
+      cell.content.row <- match("Cell Diameter(um)",
+                                x.csv[,2])
+  
+      # x.csv file tidy-up
+
+         # subset the 1-4 columns and rows with cell content information
+         x.csv <- x.csv[grepl("FG#",x.csv[,1]),
+		      1:4] 
+
+         x.csv <- x.csv[as.numeric(rownames(x.csv)) > cell.content.row,]
+
+	# re-name column names
+         colnames(x.csv) <- c("CellID",
+			   "CellSize",
+			   "X_centre",
+			   "Y_centre") 
+
+         rownames(x.csv) <- x.csv$CellID
+    
+	# move CellID to row names
+         x.csv <- as.data.frame(x.csv[,c("CellSize",
+				     "X_centre",
+				     "Y_centre")]) 
+
+         cell.sizes.centres.dataframe <- rbind(cell.sizes.centres.dataframe, 
+                                               x.csv)
+    
+    	temp <- as.data.frame(as.numeric(x.csv$CellSize))
+
+	# Final output of all cell sizes in a data frame
+    	cell.sizes.vector <- rbind(cell.sizes.vector, 
+    	                           temp) 
+    
+      # load corresponding image
+      image.load <- image_read(paste(image_files_path, 
+                                     image_files_list[i], 
+                                     sep = "/")) 
+    
+      # First dummy image from the loaded image in order to append subsequent cropped images
+      image.all <- image_crop(image.load, 
+                              crop_region)
+
+      # Loop to find cells based on x.csv cell content information
+      for (j in 1:length(x.csv$X_centre)) {
+
+      	   geometry <- paste(crop_region, 
+      	                     as.numeric(x.csv$X_centre[j])-crop_shift_offset,
+		            as.numeric(x.csv$Y_centre[j])-crop_shift_offset, 
+		            sep = "+") 
+
+      	   image.crop <- image_crop(image.load, 
+      	                            geometry)
+      	   
+           image.all <- c(image.all,
+                          image.crop)
+           
+       } # end of "for" loop to find cells based on x.csv cell content information
+    
+    # get rid of the first dummy image
+    image.all <- image.all[-1]
+    
+    # add all the images into a vector (here called "image.vector")
+    image.vector <- append(image.vector,
+                           image.all) 
+
+  } # end of loop to scan every image and csv file
+
+  # Return processed data
+
+  return(list(images_cropped = image.vector, 
+              cell_sizes_column = cell.sizes.vector, 
+              cell_size_centre_dataframe = cell.sizes.centres.dataframe))
+  
+} # end of "func_image_crop" function
+
+
+
+
+## 2) function to combine images into one (not stacking & not overlaying)
+
+func_images_combine <- function(image_vector){
+  
+        image.chunks <- split(image_vector,
+                        ceiling(seq_along(image_vector)/floor(sqrt(length(image_vector)))))
+
+        image.chunks.stackFalse <- lapply(image.chunks,magick::image_append, 
+                                          stack = F)
+
+        image.whole <- image.chunks.stackFalse[[1]]
+
+           for (i in 1:(length(image.chunks.stackFalse)-1)) {
+          
+    	         image.whole <- image_append(c(image.whole,
+    	                                       image.chunks.stackFalse[[i+1]]),
+			                     stack = T)
+    	         
+               } # end of "for" loop
+
+  return(image.whole)
+
+} # end of "func_images_combine" function
+
+
+## 3) function to create GIFs based on size cutoffs and return cell groups by cutoff sizes
+
+func_image_gifs_and_image_vector_based_on_cell_size <- function(
+                        cutpoint = cell_size_cutpoint, 
+                        labels = cell_group_labels,
+                        image_vector,
+                        zoom_region,
+                        toCreateGIF, 
+                        cell_sizes_vector # output from function func_image_crop
+                        ){
+
+  index_temp <- 1:length(image_vector)
+  cell_sizes <- cell_sizes_vector$`as.numeric(x.csv$CellSize)`
+  
+  temp.cut <- cut(cell_sizes, 
+                  cutpoint, 
+                  labels)
+  
+  temp <- table(temp.cut)
+  temp.labels <- names(temp[temp !=0])
+  temp.image.vector.list <- as.list(temp.labels)
+  names(temp.image.vector.list) <- temp.labels
+  
+  temp.image.vector.list <- lapply(temp.image.vector.list, 
+                     	        FUN = function(x)
+		                 image_vector[index_temp[temp.cut == x]])
+
+  temp.image.gif.list <- list()
+  
+  # Create gifs
+  if (toCreateGIF) {
+    
+      for (i in names(temp.image.vector.list)) {
+  	  
+        temp.image.gif.list[[i]] <- image_animate(image_scale(temp.image.vector.list[[i]], 
+    	                                                     geometry = zoom_region),
+    	                                                     fps = 4, 
+    	                                                     dispose = "previous")
+      } # end of "for" loop 
+    
+  } # end of "if" statement to create gifs
+
+  # Return processed data
+   return(list(image.vector = temp.image.vector.list, 
+               image.gif = temp.image.gif.list))
+
+} # end of func_image_gifs_and_image_vector_based_on_cell_size function
+
+
+
+## 4) function to generate image overlays and save final processed images
+# function to generate image overlays and save final processed images
+
+func_batch_output <- function(
+                                file.length,
+                                subfolder,
+                                crop_size,
+                                crop_shift,
+                                csv.files.path,
+                                image.files.path,
+                                BF.image.files, 
+                                FG.image.files,
+                                csv.files,
+                                crop_size_3_times_zoom,
+                                makeGIF,
+                                save_image
+     ){
+
+     # Starting time
+     start_t <- Sys.time()
+  
+     # call func_image_crop function to process bright field images
+     image.crop.all.BF <- func_image_crop(file_length = file.length,
+                                     image_folder_name = subfolder,
+                                     crop_region = crop_size,
+                                     crop_shift_offset = crop_shift,
+                                     csv_files_path = csv.files.path,
+                                     image_files_path = image.files.path,
+                                     image_files_list = BF.image.files, 
+                                     csv_files_list = csv.files)
+
+     # call func_image_crop function to process fluorescence images
+     image.crop.all.FG <- func_image_crop(file_length = file.length,
+                                     image_folder_name = subfolder,
+                                     crop_region = crop_size,
+                                     crop_shift_offset = crop_shift,
+                                     csv_files_path = csv.files.path,
+                                     image_files_path = image.files.path,
+                                     image_files_list = FG.image.files, 
+                                     csv_files_list = csv.files)
+
+     # Order bright field images based on cell sizes
+     BF.order <- order(image.crop.all.BF$cell_sizes_column$`as.numeric(x.csv$CellSize)`)
+
+     # Combine bright field images into one image
+     image.combine.BF <- func_images_combine(image.crop.all.BF$images_cropped[BF.order]) 
+
+     # Order fluorescence images based on cell sizes
+     FG.order <- order(image.crop.all.FG$cell_sizes_column$`as.numeric(x.csv$CellSize)`)
+
+     # Combine fluorescence images into one image
+     image.combine.FG <- func_images_combine(image.crop.all.FG$images_cropped[FG.order]) 
+
+     # Change fluorescence images from white-grey scale to white-green scale 
+     FG.image.combine.trans <- image.combine.FG %>% 
+                               as_EBImage(.) %>%
+		             EBImage::channel(.,"asgreen") %>% 
+		             magick::image_read(.)
+
+     # call func_image_gifs_and_image_vector_based_on_cell_size to make gif images
+     BF.gif.and.image.selection <- func_image_gifs_and_image_vector_based_on_cell_size(
+                                   image_vector = image.crop.all.BF$images_cropped,
+                                   zoom_region = crop_size_3_times_zoom,
+                                   toCreateGIF = makeGIF,
+                                   cell_sizes_vector = image.crop.all.BF$cell_sizes_column)
+
+     # call func_image_gifs_and_image_vector_based_on_cell_size to make gif images
+     FG.gif.and.image.selection <- func_image_gifs_and_image_vector_based_on_cell_size(
+                                   image_vector = image.crop.all.FG$images_cropped,
+                                   zoom_region = crop_size_3_times_zoom,
+                                   toCreateGIF = makeGIF,
+                                   cell_sizes_vector = image.crop.all.FG$cell_sizes_column)
+
+     # combine images from gif as one big image
+     BF.select.combine <- lapply(BF.gif.and.image.selection$image.vector,
+			      func_images_combine) 
+
+     # combine images from gif as one big image
+     FG.select.combine <- lapply(FG.gif.and.image.selection$image.vector,
+		 	      func_images_combine) 
+
+     # create overlay image of bright field and fluorescence 
+     BF.FG.merge.all <- image_composite(image.combine.BF, 
+                                        FG.image.combine.trans, 
+				    operator = "blend") 
+
+     # Display cell sizes histogram
+     temp <- image.crop.all.BF$cell_sizes_column
+
+     colnames(temp) <- "CellSize"
+
+  temp.df <- data.frame(Ref = paste(c(cell_size_cutpoint[-c(1,length(cell_size_cutpoint))]),
+                                   "um"),
+                        vals = c(cell_size_cutpoint[-c(1,length(cell_size_cutpoint))]),
+                        stringsAsFactors = FALSE)
+
+     cell.size.hist <- ggplot(data = temp, 
+                              aes(x = CellSize)) + 
+                              geom_histogram(binwidth = 1) +
+                              geom_vline(data = temp.df, 
+                                         mapping = aes(xintercept = vals, 
+                                                       colour = Ref), 
+                                         show.legend = F) +
+                              geom_text(data = temp.df, 
+                                        mapping = aes(x = vals, 
+                                                      y = 0, 
+                                                      label = Ref, 
+                                                      hjust = 1,
+                                                      vjust = -1)) +
+                              scale_y_log10() + 
+                              xlab("Cell Size (μm)") + 
+                              ylab("Log10(count)") + 
+                              theme(axis.text = element_text(size = 12)) + 
+                              theme(axis.title = element_text(size = 12)) +
+                              theme(plot.title = element_text(size = 14)) +
+                              ggtitle(paste("Histogram of sample -", 
+                                            folder_name))
+
+     # Save images option
+     if (save_image == TRUE) {
+  
+           image_write(image.combine.BF,
+                       path = paste(cur_path_image,
+                                    "Image Output",
+                                    paste0(subfolder,
+                                           " - ",
+                                           "all BF.png"),
+                       sep = "/"))
+
+           image_write(image.combine.FG,
+                       path = paste(cur_path_image,"Image Output",
+                                    paste0(subfolder,
+                                           " - ",
+                                           "all FG.png"),
+                       sep = "/"))
+
+           image_write(FG.image.combine.trans,
+                       path = paste(cur_path_image, "Image Output",
+                                    paste0(subfolder, 
+                                           " – ", 
+                                           "all FG (green).png"),
+                       sep = "/"))
+
+           image_write(BF.FG.merge.all,
+                       path = paste(cur_path_image,"Image Output",
+                                    paste0(subfolder,
+                                           " - ",
+                                           "all BF-FG overlay.png"),
+                       sep = "/"))
+  
+           for (i in seq_along(BF.select.combine)) {
+                image_write(BF.select.combine[[i]], 
+                            path = paste(cur_path_image, "Image Output",
+                                         paste0(subfolder,
+                                                " - ", 
+                                                names(BF.select.combine)[i],
+                                                " BF.png"),
+                            sep = "/"))
+               } # end of "for" loop
+
+           for (i in seq_along(BF.gif.and.image.selection$image.gif)) {
+                image_write(BF.gif.and.image.selection$image.gif[[i]], 
+                            path = paste(cur_path_image,"Image Output",
+                                         paste0(subfolder, 
+                                            " - ",
+                                            names(BF.gif.and.image.selection$image.gif)[i],
+                                            " BF.gif"),
+                            sep = "/"))
+              } # end of "for" loop
+
+           for (i in seq_along(FG.select.combine)) {
+                image_write(FG.select.combine[[i]], 
+                            path = paste(cur_path_image,
+                                         "Image Output",
+                                         paste0(subfolder,
+                                                " - ",
+                                                names(FG.select.combine)[i],
+                                                " FG.png"),
+                            sep = "/"))
+             } # end of "for" loop
+  
+           for (i in seq_along(FG.gif.and.image.selection$image.gif)) {
+                image_write(FG.gif.and.image.selection$image.gif[[i]], 
+                path = paste(cur_path_image,
+                             "Image Output",
+                             paste0(subfolder,
+                                    " - ",
+                                    names(FG.gif.and.image.selection$image.gif)[i],
+                                    " FG.gif"),
+                sep = "/"))
+            } # end of "for" loop
+
+       ggsave(filename = paste0(subfolder,
+                                " - ",
+                                "Cell Size Distribution.png"), 
+              plot = cell.size.hist, 
+              path = paste(cur_path_image,
+                           "Image Output",
+                           sep = "/"), 
+              dpi = 300)
+
+       } # end of if "Save images option" statement
+
+# Return end of run message
+# Ending time
+end_t <- Sys.time()
+
+print("Function run time:")
+print(end_t - start_t)
+
+return("images saved")
+
+} # end of "func_batch_output"  function
+
+
+# ==== build functions end ====
+
+
+
+# ==== Run the script and get results ====
+
+# Execute script
+
+cell_load_folder_results <- func_batch_output(
+                            file.length = input_info[["file.length"]],
+                            subfolder = subfolder_name,
+                            crop_size = crop_size,
+                            crop_shift = crop_shift,
+                            csv.files.path = input_info[["csv.files.path"]],
+                            image.files.path = input_info[["image.files.path"]],
+                            BF.image.files = input_info[["BF.image.files"]],
+                            FG.image.files = input_info[["FG.image.files"]],
+                            csv.files = input_info[["csv.files"]],
+                            crop_size_3_times_zoom = crop_size_3_times_zoom,
+                            makeGIF = TRUE, # change TRUE to FALSE to disable gif output
+                            save_image = TRUE
+                            )
+
+
+# ==== Run the script and get results end ====
+
+
+# end of Basic Protocol 1, Image Analysis 
+
+```

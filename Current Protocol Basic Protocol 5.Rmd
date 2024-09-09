@@ -1,0 +1,579 @@
+---
+title: "Basic Protocol 5"
+author: "Wenyan Li"
+date: "2023-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Support script for basic protocol 5
+
+```{r}
+
+# load library
+library(Seurat)
+library(SeuratObject)
+library(dplyr)
+library(flowCore)
+library(Biobase)
+library(rstudioapi)
+
+# set a seed to re-produce pseudorandom numbers
+set.seed(99)
+
+# Obtain the path of this rmarkdown file and assign it to object "get_path"
+get_path <- dirname(rstudioapi::getSourceEditorContext()$path)
+
+# Set "get_path" as Working Directory
+setwd(get_path)
+
+# Save images and data to this folder
+saveTo <- "Protocol 5 output"
+
+# load subsetted Seurat objects for Basic Protocol 4
+# Or use any other Seurat objects as the input source
+load("Protocol 4 output/subsetted demo Seurat objects (advanced analysis).RData")
+
+# parameter explanation
+# @ para input_seurat
+# Seurat object for data conversion
+
+# @ para include_protein_assay_name
+# name of protein assay if applicable
+
+# @ para protein_data_type
+# type of protein data. e.g. count
+
+# @ para rna_genes_to_pull
+# input can be output from FindAllMarkers() or FindMarkers() or a vector of genes
+
+# @ para p_adj_cutoff, log2FC_cutoff and top_n_genes are only applicable when
+# rna_genes_to_pull is generated from FindAllMarkers() or FindMarkers()
+
+# @ para extra_gene_list
+# other genes defined by user to be included
+
+# @ para rna_data_type
+# type of rna data. e.g. count
+
+# @ para meta_data_to_pull
+# numeric data from the meta.data of the provided Seurat object
+# e.g. nCount_RNA, nFeature_RNA
+
+# @ para sample_id_to_pull
+# categorical data from the meta.data of the provided Seurat object
+# e.g. Sample_ID, seurat_clusters
+
+# @ para embedding_to_pull
+# which embedding to pull. e.g. pca, umap
+
+# @ para add_jitter_to_which_meta
+# add jitter effect to categorical meta data
+
+# @ para outfile_name
+# name for the output FCS file
+
+# @ para save_path
+# path to save the output FCS file
+
+# example
+
+# fsc_in_r <- func_create_fcs(input_seurat = cell_lines_qc, 
+#                             rna_genes_to_pull = c("LGALS1","MS4A1","TNF"), 
+#                             p_adj_cutoff = 0.05,
+#                             log2FC_cutoff = 1,
+#                             top_n_genes = 5,
+#                             extra_gene_list = c("CD3D", "CD79A"),
+#                             include_protein_assay_name = "AB", 
+#                             meta_data_to_pull = c("nCount_RNA", 
+#                                                   "nFeature_RNA", 
+#                                                   "percent.mt", 
+#                                                   "seurat_clusters", 
+#                                                   "doublet_check", 
+#                                                   "smk"), 
+#                             embedding_to_pull = c("umap", "adt.umap"), 
+#                             outfile_name = "export_fcs",
+#                             add_jitter_to_which_meta = c("seurat_clusters", "smk"), 
+#                             sample_id_to_pull = c("smk", "doublet_check"), 
+#                             save_path = getwd())
+
+
+# Create function
+func_create_fcs <- function(input_seurat = NaN,
+                            include_protein_assay_name = NaN,
+                            protein_data_type = 'data', 
+                            rna_genes_to_pull = NaN,
+                            p_adj_cutoff = 0.05,
+                            log2FC_cutoff = 1,
+                            top_n_genes = 3,
+                            extra_gene_list = NaN,
+                            rna_data_type = 'data', 
+                            meta_data_to_pull = NaN,
+                            sample_id_to_pull = NaN, 
+                            embedding_to_pull = NaN,
+                            add_jitter_to_which_meta = NaN,
+                            outfile_name = NaN,
+                            save_path = getwd()){
+  
+  # ---------------
+  # ---------------
+  # ---------------
+  # check input
+  if (class(input_seurat) != 'Seurat'){
+   stop('Please provide a Seurat object. 
+        e.g. input_seurat = yourSeurat')
+  }
+  
+  if (!is.na(include_protein_assay_name)){
+    if (!"AB" %in% Seurat::Assays(input_seurat)){
+      stop('Please make sure the protein assay name 
+           is correct or leave it as NaN')
+    }
+  }
+  
+  if (is.na(outfile_name)){
+    stop('Please provide a name 
+         for the FCS file to be generated')
+  }
+  
+ if (any(is.na(include_protein_assay_name)) + 
+     any(is.na(rna_genes_to_pull)) +
+     any(is.na(meta_data_to_pull)) +
+     any(is.na(embedding_to_pull)) == 4){
+   stop('No data exported. Please check your functon inputs. 
+        For example, a gene list for "rna_genes_to_pull".')
+ }
+  
+  
+  # ---------------
+  # ---------------
+  #----------------
+  # Gather information
+  sum_matrix <- c()
+  
+  ####### Protein
+  if (!is.na(include_protein_assay_name)){
+    
+      if (include_protein_assay_name %in% Seurat::Assays(input_seurat)){
+      protein_matrix <- GetAssayData(input_seurat, 
+                                     slot = protein_data_type, 
+                                     assay = include_protein_assay_name) %>% 
+                        as.matrix() %>% 
+                        t()
+      
+      sum_matrix <- cbind(sum_matrix, protein_matrix)
+      }
+  }
+  
+  
+  ####### RNA
+  
+  # / 1. Marker genes
+  if (!any(is.na(rna_genes_to_pull))){
+     
+    # // the input is a DGE matrix
+    if (class(rna_genes_to_pull) == "data.frame") {
+      
+       # add cutoff values to the DGE matrix
+       rna_genes_to_pull <- rna_genes_to_pull[abs(rna_genes_to_pull$avg_log2FC) > log2FC_cutoff & 
+                                              rna_genes_to_pull$p_val_adj < p_adj_cutoff, ]
+       
+       # pull out top X genes for each group
+       x <- rna_genes_to_pull %>% 
+            group_by(cluster) %>% 
+            slice_max(n = top_n_genes, order_by = avg_log2FC) %>% 
+            mutate(gene_raname = paste(cluster, gene, sep = "_"))
+       
+       # remove gene duplicates
+       x <- x[!duplicated(x$gene), ]
+ 
+       # make sure genes are in the Seurat object
+       temp <- intersect(x$gene, rownames(input_seurat))
+       
+       # remove genes that are not in the Seurat object
+       x <- x %>% dplyr::filter(gene %in% temp)
+       
+       # fetch gene matrix
+       rna_matrix <- GetAssayData(input_seurat, 
+                                  slot = rna_data_type, 
+                                  assay = "RNA")[x$gene,] %>% 
+                     as.matrix() %>% 
+                     t() 
+       
+       colnames(rna_matrix) <- x$gene_raname
+       
+       # // when the input is a set of genes
+       if (!any(is.na(extra_gene_list))){
+         
+         temp_extra <- setdiff(extra_gene_list, x$gene)
+         temp_extra <- intersect(temp_extra, rownames(input_seurat))
+         
+         if (!identical(temp_extra, character(0))) {
+           
+            extra_rna_matrix <- GetAssayData(input_seurat, 
+                                             slot = rna_data_type, 
+                                             assay = "RNA")[temp_extra,] %>% 
+                                 as.matrix() %>% 
+                                 t() 
+            
+            colnames(extra_rna_matrix) <- paste("extra", temp_extra, sep = '_')
+            
+         }
+         
+         sum_matrix <- cbind(sum_matrix, rna_matrix, extra_rna_matrix)
+         
+       }else{
+       
+       sum_matrix <- cbind(sum_matrix, rna_matrix)
+       
+       }
+      
+    } else if (any(c(rna_genes_to_pull, extra_gene_list) %in% rownames(input_seurat))) {
+      
+       temp_gene_list <- intersect(c(rna_genes_to_pull, extra_gene_list), 
+                                   rownames(input_seurat)) 
+       
+       rna_matrix <- GetAssayData(input_seurat, 
+                               slot = rna_data_type, 
+                               assay = "RNA")[temp_gene_list,] %>% 
+                     as.matrix() %>% 
+                     t() 
+    
+       sum_matrix <- cbind(sum_matrix, rna_matrix)
+    }
+  }
+  
+  
+  ####### Meta data
+  # 1. Excluding columns that aren't purely numeric
+  if (!any(is.na(meta_data_to_pull)) & 
+      any(meta_data_to_pull %in% colnames(input_seurat@meta.data))){
+    
+    # / remove meta_data_to_pull that is not in input_seurat@meta.data
+    temp <- intersect(meta_data_to_pull, colnames(input_seurat@meta.data))
+    temp2 <- temp
+    
+    meta_matrix <- input_seurat@meta.data[, temp]
+    
+    # / remove meta_data_to_pull that contain(s) letters
+    for (i in temp){
+      if (class(meta_matrix[, i]) == "factor" & 
+          any(grepl("^[A-Za-z]+$", levels(meta_matrix[, i]), perl = TRUE))){
+        temp2 <- setdiff(temp2, i)
+      }
+      
+      if (class(meta_matrix[, i]) == "character" & 
+          any(grepl("^[A-Za-z]+$", meta_matrix[, i], perl = TRUE))){
+        temp2 <- setdiff(temp2, i)
+      }
+      
+    }
+    
+    # / subset input_seurat@meta.data
+    meta_matrix <- input_seurat@meta.data[, temp2]
+    
+    # / convert categorical column with numbers as levels to numeric
+    for (i in colnames(meta_matrix)){
+      if(class(meta_matrix[, i]) == "factor" & 
+         !any(grepl("^[A-Za-z]+$", levels(meta_matrix[, i]), perl = TRUE))){
+        meta_matrix[, i] <- as.numeric(as.character(meta_matrix[, i]))
+      }
+    }
+    
+    # / add final meta_matrix to sum_matrix
+    sum_matrix <- cbind(sum_matrix, meta_matrix)
+  }
+  
+  # 2. convert sample tags or sample IDs to numbers and 
+  # add the mapping detail to description. e.g. "Tag1" is 1
+  sample_id_map <- c()
+  
+  if (!any(is.na(sample_id_to_pull)) & 
+      any(sample_id_to_pull %in% colnames(input_seurat@meta.data))){
+    
+    # / remove sample_id_to_pull that is not in input_seurat@meta.data
+    temp <- intersect(sample_id_to_pull, colnames(input_seurat@meta.data))
+    meta_matrix <- input_seurat@meta.data[, temp] %>% as.data.frame()
+    colnames(meta_matrix) <- temp
+    
+    for (i in temp) {
+      # / convert data
+      temp_vector <- as.character(meta_matrix[, i])
+      
+      meta_matrix[, i] <- factor(temp_vector, 
+                                 levels = sort(unique(temp_vector)), 
+                                 labels = c(1: length(unique(temp_vector))))
+      
+      meta_matrix[, i] <- as.numeric(as.character(meta_matrix[, i]))
+      
+      # / add jitters to the categorical column(s) as new column(s)
+      meta_matrix[, paste(i,"jitters", sep = "_")] <- jitter(meta_matrix[, i])
+      
+      # / label mapping method
+      temp_label_list <- data.frame(levels = sort(unique(temp_vector)), 
+                                    labels = c(1:length(unique(temp_vector)))) %>% 
+                         split(., 1:nrow(.))
+      
+      names(temp_label_list) <- paste0(i, 
+                                       "_assigned_intensity_as ", 
+                                       names(temp_label_list))
+      
+      # / add label links to sample_id_map
+      sample_id_map <- c(sample_id_map, temp_label_list)
+      
+    }
+    
+    # / add final meta_matrix to sum_matrix
+    sum_matrix <- cbind(sum_matrix, meta_matrix)
+    
+  }
+
+  
+  ####### Embedding
+  if (!any(is.na(embedding_to_pull))){
+    
+    if (is.null(input_seurat@reductions)){
+      print("Seurat object doesn't have embeddings")
+      
+    }else if (any(embedding_to_pull %in% names(input_seurat@reductions))){
+      embed <- c()
+      
+      for (i in embedding_to_pull) {
+        
+        temp <- Embeddings(input_seurat, reduction = i)
+        
+        if (i == 'pca'){
+          
+            if (dim(temp)[2] >= 4){
+              temp <- temp[,1:4]
+            }
+        }
+
+        embed <- cbind(embed, temp)
+      }
+      
+      sum_matrix <- cbind(sum_matrix, embed)
+    }
+    
+  }
+  
+  
+  ####### Add jitters (optional by user)
+  # Add jitters to categorical meta data
+  if (!any(is.na(add_jitter_to_which_meta)) & 
+      any(add_jitter_to_which_meta %in% colnames(sum_matrix)) & 
+      any(add_jitter_to_which_meta %in% meta_data_to_pull)){
+    
+    temp <- intersect(add_jitter_to_which_meta, meta_data_to_pull)
+    temp <- intersect(add_jitter_to_which_meta, colnames(sum_matrix))
+    
+    for (i in temp) {
+      sum_matrix[, i] <- as.numeric(as.character(sum_matrix[, i]))
+      sum_matrix[, paste(i,"jitters", sep = "_")] <- jitter(sum_matrix[, i])
+    }
+    
+  }
+  
+  
+  ####### Reorder columns (excluding parameter Time)
+  # Reorder columns alphabetically
+  sum_matrix <- sum_matrix %>% 
+                select(order(colnames(.)))
+  
+  
+  ####### Time
+  Time <- 1: dim(input_seurat)[2]
+  sum_matrix <- cbind(sum_matrix, Time)
+  
+  
+  
+  #-------------
+  #-------------  
+  #-------------
+  # Build FCS file
+  ######### Misc
+  # 1. Paramter names
+    # / remove all symbols but underscore "_" (optional)
+    # colnames(sum_matrix) <- gsub("[[:punct:]]", "_", colnames(sum_matrix))  
+  
+    # / use column names as parameter names, including Time
+    para_names <- dimnames(sum_matrix)[[2]]
+    names(para_names) <- as.character(1: dim(sum_matrix)[2]) %>% 
+                         paste0("$P",.,"N")
+    
+    # / create an NaN vector for desc names
+    desc_input <- rep(NaN,dim(sum_matrix)[2])
+    names(desc_input) <- desc_input
+    
+  # 2. Ranges
+    # / calculate minimum and maximum values, with 20% margin
+    minR <- sapply(as.data.frame(sum_matrix), min, na.rm = T) - 
+            abs(sapply(as.data.frame(sum_matrix), min, na.rm = T))*0.2
+    
+    maxR <- sapply(as.data.frame(sum_matrix), max, na.rm = T) - 
+            abs(sapply(as.data.frame(sum_matrix), max, na.rm = T))*0.2
+    
+    # / remove the 20% margin for the Time parameter
+    minR['Time'] <- min(Time)
+    maxR['Time'] <- max(Time)
+    
+  # 3. Finalize AnnotatedDataFrame for parameters creation
+    para_matrix <- data.frame(name=I(para_names),
+                              desc=I(desc_input),
+                              range = maxR - minR,
+                              minRange = minR,
+                              maxRange = maxR)
+    
+  # 4. Label description
+    labelDescription <- c("Name of Parameter",
+                          "Description of Parameter",
+                          "Range of Parameter",
+                          "Minimum Parameter Value after Transforamtion",
+                          "Maximum Parameter Value after Transformation")
+    
+    labelDescription <- as.data.frame(labelDescription)
+    rownames(labelDescription) <- c("name",
+                                    "desc",
+                                    "range",
+                                    "minRange",
+                                    "maxRange")
+    
+  # 5. Finalize parameters for FCS creation
+    para_input <- AnnotatedDataFrame(para_matrix)
+    para_input@varMetadata <- labelDescription
+    
+  # 6. Prepare description information for FCS creation
+    # / create an empty list
+    des <- list()
+    
+    # / create experiment note
+    des[['EXPERIMENT NAME']] <- "This file is converted from a scRNAseq experiment."
+    
+    # / create experiment tube name (NOT FCS file name)
+    if (!is.null(Project(input_seurat))){
+      des[['$FIL']] <- Project(input_seurat)
+    }else{
+      des[['$FIL']] <- "converted from scRNAseq"
+    }
+    
+    # / extract the total number of parameters, including Time
+    des[["$PAR"]] <- length(para_names)
+    
+    # / define time step interval
+    des[["$TIMESTEP"]] <- 1
+    
+    # / add file export time
+    des[['EXPORT TIME']] <- timestamp(prefix = "", suffix = "")
+    
+    # / add sample_id_map
+    if (!is.null(sample_id_map)){
+    des <- c(des, sample_id_map)
+    }
+    
+    # / curate parameter settings, e.g. display format
+    for (i in 1:length(para_names)) {
+      des[[paste0("$P",i,"N")]] <- dimnames(sum_matrix)[[2]][i]
+      des[[paste0("$P",i,"S")]] <- dimnames(sum_matrix)[[2]][i]
+      des[[paste0("$P",i,"E")]] <- "0,0"
+      des[[paste0("$P",i,"G")]] <- "1"
+      des[[paste0("P",i,"DISPLAY")]] <- "LIN"
+      des[[paste0("P",i,"BS")]] <-"0"
+      des[[paste0("P",i,"MS")]] <-"0"
+      des[[paste0("$P",i,"R")]] <- para_matrix$range[i]
+    }
+    
+    
+  ######### Make a flow frame
+  # feed in data matrix and parameters
+    fcs <- new("flowFrame",
+               exprs= as.matrix(sum_matrix),
+               parameters= para_input, 
+               description = des)
+    
+    
+  ######## Export file
+    # / check if export path exists, else create one
+    ifelse(!dir.exists(file.path(save_path)), 
+           dir.create(file.path(save_path)), FALSE)
+    
+    # / do export
+    if (!is.na(outfile_name)){
+      write.FCS(fcs, 
+                paste(save_path, 
+                      paste0(outfile_name,".fcs"), 
+                      sep = "/"))
+    }else{
+      write.FCS(fcs, 
+                paste(save_path, 
+                      "seurat_converted_fcs.fcs"), 
+                sep = "/")
+    }
+    
+    # / return a FCS object in R environment
+    return(fcs)
+}
+
+
+
+
+```
+
+
+```{r}
+
+# convert scRNAseq data to FCS format   
+
+# manually pick a list of genes to include
+extra_genes_to_include <- c('IL7R', 'CCR7', # Naive CD4+ T
+                            'CD14', 'LYZ',  # CD14+ Mono
+                            'IL7R', 'S100A4', # Memory CD4+
+                            'MS4A1', 'PXK', # B
+                            'CD8A', # CD8+ T
+                            'CD3D', 'GZMK', # T cells
+                            'S100B', 'TRGV9', #gd T
+                            'FCGR3A', 'MS4A7', # FCGR3A+ Mono
+                            'CD68', 'NAAA', # Marophages
+                            'GNLY', 'NKG7', # NK
+                            'NCAM1', 'IL2RB', #NKT
+                            'ZBTB46', 'ITGAX', # DC
+                            'CSF3R', 'PTGS2','CCRL2', # Neutrophils
+                            'MZB1', 'SSR4', # Plasma cells
+                            'PPBP' # Platelet
+                            )
+
+# define FCS file name
+exp_name <- "demo_data_1"
+
+meta_list <- c("nCount_RNA", 
+	             "nFeature_RNA", 
+               "percent.mt", 
+               "seurat_clusters", 
+               "m3_pseudotime")
+
+fcs_demo_qc <- func_create_fcs(input_seurat = subset_demo_seurat_1, 
+                               include_protein_assay_name = "AB",
+                               rna_genes_to_pull = subset_demo1_DGEs$DGEs_cluster,
+                               extra_gene_list = extra_genes_to_include,
+                               meta_data_to_pull = meta_list, 
+                               top_n_genes = 3,
+                               sample_id_to_pull = c("smk"),
+                               add_jitter_to_which_meta = c("seurat_clusters"), 
+                               embedding_to_pull = c("umap"),
+                               outfile_name = exp_name,
+                               save_path = saveTo
+                                  )
+
+```
+
+
+```{r}
+# save the data formatted in FCS as a R object to local dirve
+save(fcs_demo_qc,
+     file = paste(saveTo, 
+                  "demo1_fcs.RData", sep = "/")
+     )
+```
+

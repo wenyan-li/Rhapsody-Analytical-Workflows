@@ -1,0 +1,110 @@
+---
+title: "Packages installation"
+author: "Wenyan Li"
+date: "2022-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Computer for script testing
+
+Computer configuration:
+Processor	Intel(R) Xeon(R) Bronze 3204 CPU @ 1.90GHz   1.90 GHz  (2 processors)
+Installed RAM	32.0 GB (31.6 GB usable)
+System type	64-bit operating system, x64-based processor
+
+Edition	Windows 10 Pro for Workstations
+Version	21H2
+Installed on	18/03/2021
+OS build	19044.1889
+
+
+## Software needed for the script
+
+Download software
+RStudio version used: RStudio-2022.07.2-576.exe
+(Link to download: https://www.rstudio.com/products/rstudio/download/)
+
+R version used: R-4.2.1-win.exe
+(Link to download: https://cran.r-project.org/bin/windows/base/old/4.2.1)
+
+Rtools version used: rtools42-5355-5357.exe
+(Link to download: https://cran.r-project.org/bin/windows/Rtools/rtools42/rtools.html)
+
+Note: if the operation system is MacOS, download the software version for MacOS
+
+
+## Install RStudio, R and Rtools
+Install them with default settings
+
+
+
+## Open RStudio and install packages
+
+1. Install tools for package installation
+```{r}
+install.packages('BiocManager')
+install.packages('remotes')
+install.packages('devtools')
+```
+
+At the beginning of installing devtools, a window may pop up and ask “Do you want to install from sources the package which needs compliation?”. Click “Yes” to continue. Note: The installation of this package may take a longer time than the other packages.
+
+2. Install packages from CRAN
+```{r}
+install.packages('magick')
+install.packages('tidyverse')
+install.packages('ggplot2')
+install.packages('Seurat')
+install.packages('harmony')
+install.packages('patchwork')
+install.packages('R.utils')
+install.packages('terra')
+install.packages('sf')
+install.packages('rstudioapi')
+install.packages('colorRamps')
+install.packages('viridis')
+install.packages('pheatmap')
+install.packages('ape')
+```
+
+During installation of the 'Seurat' package, a window may pop up and ask “Do you want to install from sources the package which needs compliation?”. Click “Yes” to continue.
+
+
+3. Install packages from BioConductor
+```{r}
+BiocManager::install('EBImage')
+BiocManager::install('celldex')
+BiocManager::install('SingleR')
+BiocManager::install('Slingshot')
+BiocManager::install('InterCellar')
+BiocManager::install('romanhaa/cerebroApp')
+BiocManager::install('flowCore')
+BiocManager::install("ComplexHeatmap")
+```
+
+4. Install packages from GitHub
+```{r}
+devtools::install_github('chris-mcginnis-ucsf/DoubletFinder')
+devtools::install_github('satijalab/seurat-wrappers')
+devtools::install_github('cole-trapnell-lab/monocle3')
+devtools::install_github('sqjin/CellChat')
+devtools::install_github('immunogenomics/presto')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
